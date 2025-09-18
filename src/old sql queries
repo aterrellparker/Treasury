@@ -1,0 +1,146 @@
+old sql queries
+ # query = """
+    #     SELECT 
+    #         Date, 
+    #         SUM(Amount) OVER (ORDER BY Date) AS Balance
+    #     FROM transactionTable
+    #     WHERE Source = "Checking"
+    #     AND Date <= :dend
+    #     ORDER BY Date
+    # """
+    
+    # balanceTable = pd.read_sql(
+    #     query,
+    #     connection,
+    #     params={"dend": endDate},
+    #     parse_dates=["Date"],
+    # )
+
+    # ---------------------------
+    # Initial Balance
+    # ---------------------------
+    query = """
+        SELECT SUM(Amount)
+        FROM transactionTable
+        WHERE Source = "Checking"
+        AND Date < :dstart
+    """
+    initialBalance = pd.read_sql(
+        query,
+        connection,
+        params={"dstart": startDate}
+    ).values[0, 0]
+
+    # ---------------------------
+    # Current Balance
+    # ---------------------------
+    query = """
+        SELECT SUM(Amount)
+        FROM transactionTable
+        WHERE Source = "Checking"
+        AND Date <= :dend
+    """
+    currentBalance = pd.read_sql(
+        query,
+        connection,
+        params={"dend": endDate}
+    ).values[0, 0]
+
+    # ---------------------------
+    # Deposits
+    # ---------------------------
+    query = """
+        SELECT *
+        FROM transactionTable
+        WHERE Source = "Checking"
+        AND Amount > 0
+        AND Date BETWEEN :dstart AND :dend
+    """
+    deposits = pd.read_sql(
+        query,
+        connection,
+        params={"dstart": startDate, "dend": endDate},
+        parse_dates=["Date"],
+    )
+
+    # ---------------------------
+    # Withdrawals
+    # ---------------------------
+    query = """
+        SELECT *
+        FROM transactionTable
+        WHERE Source = "Checking"
+        AND Amount < 0
+        AND Date BETWEEN :dstart AND :dend
+    """
+    withdrawals = pd.read_sql(
+        query,
+        connection,
+        params={"dstart": startDate, "dend": endDate},
+        parse_dates=["Date"],
+    )
+
+
+def load_data(connection, startDate, endDate):
+    startDate = pd.Timestamp(startDate)
+    endDate = pd.Timestamp(endDate)
+    # ---------------------------
+    # Transaction Notes Table
+    # ---------------------------
+    query = """
+        SELECT 
+            t.Id, 
+            t.Date as "Date [DATE]",
+            t.Amount as "Amount [DECIMAL]",
+            t.Source,
+            t.Description,
+            n.Category,
+            n.Notes
+        FROM transactionTable t
+        LEFT JOIN notesTable n
+            ON t.Id = n.Id
+        WHERE Source = "Checking"
+
+    """
+    transactionNotesTable = pd.read_sql(
+        query,
+        connection,
+        parse_dates=["Date"],
+    )
+        # ---------------------------
+    # Balance Table
+    # ---------------------------
+    balance_df = (
+    transactionNotesTable[transactionNotesTable["Date"] <= endDate]
+    .sort_values("Date")
+    .assign(Balance=lambda df: df["Amount"].cumsum())
+    )
+    balanceTable = balance_df[["Date", "Balance"]]
+   
+    # ---------------------------
+    # Initial Balance (before startDate)
+        # ---------------------------
+    initialBalance = (
+        transactionNotesTable.loc[transactionNotesTable["Date"] < startDate, "Amount"]
+        .sum()
+    )
+
+    # Current Balance (up to endDate)
+    currentBalance = (
+        transactionNotesTable.loc[transactionNotesTable["Date"] <= endDate, "Amount"]
+        .sum()
+    )
+
+    # Deposits (Amount > 0 in range)
+    deposits = transactionNotesTable[
+        (transactionNotesTable["Amount"] > 0)
+        & (transactionNotesTable["Date"].between(startDate, endDate))
+    ]
+
+    # Withdrawals (Amount < 0 in range)
+    withdrawals = transactionNotesTable[
+        (transactionNotesTable["Amount"] < 0)
+        & (transactionNotesTable["Date"].between(startDate, endDate))
+    ]
+    return (transactionNotesTable, balanceTable, initialBalance, currentBalance, deposits, withdrawals,
+)
