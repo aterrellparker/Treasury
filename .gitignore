@@ -1,5 +1,5 @@
-data/
+data/raw
+data/backups
 reports/
 env/
-*.db
 src/cameltoe.pt
