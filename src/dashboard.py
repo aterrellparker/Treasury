@@ -37,7 +37,7 @@ class TreasuryDashboard:
             date.decode(), "%Y-%m-%d").date())
 
 
-        self.ingestor = ingest.DataIngestor("database.db")
+        self.ingestor = ingest.DataIngestor(db_path)
         self.ingestor.create_database()   # create schema
         if not os.path.exists(db_path):
             self.ingestor.create_database()   # create schema
