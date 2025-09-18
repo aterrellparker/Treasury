@@ -38,12 +38,12 @@ class TreasuryDashboard:
 
 
         self.ingestor = ingest.DataIngestor(db_path)
-        self.ingestor.create_database()   # create schema
-        if not os.path.exists(db_path):
-            self.ingestor.create_database()   # create schema
-            self.connection = sqlite3.connect(
-                db_path, check_same_thread=False, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
-            self.ingestor.ingest_data()       # load CSVs
+        # self.ingestor.create_database()   # create schema
+        # if not os.path.exists(db_path):
+        #     self.ingestor.create_database()   # create schema
+        #     self.connection = sqlite3.connect(
+        #         db_path, check_same_thread=False, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
+        #     self.ingestor.ingest_data()       # load CSVs
 
         self.connection = sqlite3.connect(
             db_path, check_same_thread=False, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
