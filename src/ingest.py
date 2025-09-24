@@ -154,8 +154,7 @@ class DataIngestor:
             ON d.PeriodStart >= m.InitiationDate
             AND (m.GraduationDate IS NULL OR d.PeriodStart <= m.GraduationDate)
         """)
-        payments = pd.read_csv("./data/raw/DuePayments.csv")  
-        payments.to_sql("PaymentsTable", connection, if_exists="replace", index=False)
+
         
 
 
@@ -199,7 +198,7 @@ class DataIngestor:
         """Load all CSV sources into database."""
         connection = sqlite3.connect(self.db_path)
         cursor = connection.cursor()
-
+    
         for file in glob.glob("./Data/Raw/Members/*.csv"):
             df = pd.read_csv(file)
             # df['InitiationDate'] = pd.to_datetime(df['InitiationDate']).dt.strftime('%Y-%m-%d')
@@ -280,7 +279,9 @@ class DataIngestor:
             df=df.drop(columns=["Name of sender/receiver","Account"])
             df.to_sql("tmp", connection, if_exists="append", index=False)
 
-
+        payments = pd.read_csv("./data/raw/DuePayments.csv")  
+        payments.to_sql("PaymentsTable", connection, if_exists="replace", index=False)
+        
         # Merge into main table
         cursor.execute("INSERT OR IGNORE INTO TransactionTable SELECT * FROM tmp")
         cursor.execute("DROP TABLE IF EXISTS tmp")

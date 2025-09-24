@@ -398,7 +398,7 @@ class TreasuryDashboard:
         
         dues_status = (
             self.dues
-            .groupby(["GBId", "MemberName", "PeriodStart", "Amount", "TransactionId"], as_index=False)
+            .groupby(["GBId", "MemberName", "PeriodStart", "Amount" ], as_index=False)
             .agg({"AmountPaid": "sum"})   # sum all payments for the due
         )
         print(self.dues)
@@ -479,7 +479,7 @@ class TreasuryDashboard:
                 return ["color: white; background-color:  #D22B2B"] * len(row)  # light red
 
         st.subheader("💳 Dues Status by Member")
-        styled_df = dues_status[["GBId", "TransactionId", "MemberName", "PeriodStart", "Amount", "AmountPaid", "Status"]] \
+        styled_df = dues_status[["GBId", "MemberName", "PeriodStart", "Amount", "AmountPaid", "Status"]] \
             .style.apply(highlight_status, axis=1)
         # adjust height so all rows show
         st.dataframe(styled_df, use_container_width=True, row_height=40, height=(40 * (len(dues_status) + 1)))
