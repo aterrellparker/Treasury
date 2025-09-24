@@ -2,6 +2,7 @@ import os
 import colorsys
 import decimal
 import datetime
+import calendar 
 import sqlite3
 
 import pandas as pd
@@ -12,7 +13,6 @@ import numpy as np
 import ingest
 import report_generator
 import PlotlyBubbleChart
-
 
 
 def decimal_converter(val: bytes):
@@ -36,7 +36,6 @@ class TreasuryDashboard:
         sqlite3.register_converter("DATE", lambda date: datetime.datetime.strptime(
             date.decode(), "%Y-%m-%d").date())
 
-
         self.ingestor = ingest.DataIngestor(db_path)
         # self.ingestor.create_database()   # create schema
         # if not os.path.exists(db_path):
@@ -56,6 +55,14 @@ class TreasuryDashboard:
                 self.today - datetime.timedelta(days=30), self.today)
         self.date_range = st.session_state.date_range
 
+        if "source" not in st.session_state:
+            st.session_state.source = "Checking"
+        self.source = st.session_state.source
+
+        if "term" not in st.session_state:
+            st.session_state.term = "2025-08-01"
+        self.term = st.session_state.term
+
         # Load initial data
         self.load_data()
 
@@ -72,8 +79,8 @@ class TreasuryDashboard:
             </style>
         """
         st.markdown(hide_streamlit_style, unsafe_allow_html=True)
-        dashboard, yoy, dues, budget, editor = st.tabs(
-            ["📈 Dashboard", "📆 YoY", "💵 Dues", "📊 Budget",  "📝 Edit Transactions"])
+        dashboard, dues, yoy, budget, editor = st.tabs(
+            ["📈 Dashboard", "💵 Dues",  "📆 YoY", "📊 Budget",  "📝 Edit Transactions"])
         with editor:
             self.render_transaction_editor()
             self.render_data_buttons()
@@ -85,7 +92,9 @@ class TreasuryDashboard:
             st.divider()
             self.render_balances()
             self.render_balance_chart()
-            self.render_pi_chart()
+            self.render_pie_chart()
+        with dues:
+            self.render_dues_plot()
 
     def load_data(self):
         start_date = pd.Timestamp(self.date_range[0])
@@ -93,18 +102,17 @@ class TreasuryDashboard:
 
         # Load Transaction Notes Table
         SQL_QUERY = """
-            SELECT 
-                t.Id, 
+            SELECT
+                t.TransactionId,
                 t.Date as "Date [DATE]",
                 t.Amount as "Amount [DECIMAL]",
                 t.Source,
                 t.Description,
                 n.Category,
                 n.Notes
-            FROM transactionTable t
-            LEFT JOIN notesTable n
-                ON t.Id = n.Id
-            WHERE Source = "Checking"
+            FROM TransactionTable t
+            LEFT JOIN NoteTable n
+                ON t.TransactionId = n.NoteId
         """
         self.transaction_notes_table = pd.read_sql(
             SQL_QUERY,
@@ -112,10 +120,26 @@ class TreasuryDashboard:
             parse_dates=["Date"],
         )
 
+        self.ingestor.load_members()
+           # Query dues and payments for that term
+        query = f"""
+        SELECT
+            d.DueId, d.GBId, t.TransactionID, m.MemberName, d.PeriodStart, d.Amount, t.Amount as AmountPaid
+        FROM DuesTable d
+        LEFT JOIN PaymentsTable p
+            ON d.DueId = p.DueId
+        LEFT JOIN MemberTable m
+            ON m.GBId = d.GBId
+        LEFT JOIN TransactionTable t
+            ON t.TransactionID = p.TransactionId
+        """  
+        self.dues = pd.read_sql(query, self.connection)
+
         # Preprocess Data
         df = self.transaction_notes_table.copy()
         df["Date"] = pd.to_datetime(df["Date"]).dt.date
         df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
+        df = df[df["Source"] == self.source] if self.source else df
 
         # Fill missing/blank categories
         df["Category"] = df["Category"].fillna("Uncategorized")
@@ -128,17 +152,18 @@ class TreasuryDashboard:
 
         self.initialBalance = df.loc[df["Date"]
                                      < start_date.date(), "Amount"].sum()
-        self.currentBalance = df["Amount"].sum()
+        self.currentBalance = df.loc[df["Date"]
+                                     <= end_date.date(), "Amount"].sum()
 
         # Apply filters (date range + source)
-        mask = (df["Date"].between(start_date.date(), end_date.date())) & (
-            df["Source"] == "Checking")
+        mask = (df["Date"].between(start_date.date(), end_date.date()))
         filtered = df.loc[mask]
 
         # Receipts and Expenditures
         self.deposits = filtered[filtered["Amount"] > 0]
         self.withdrawals = filtered[filtered["Amount"] < 0]
 
+        # print(self.deposits)
         # Income and Expense Summaries
         self.incomes = self.deposits.groupby(
             "Category", as_index=False)["Amount"].sum()
@@ -172,36 +197,63 @@ class TreasuryDashboard:
                 format="MM.DD.YYYY",
                 value=self.date_range
             )
+            # # Result
+            # st.text(f'{report_year} {report_month_str}')
         with col2:
             date_options = ["Custom", "Past Month",
-                            "Past Year", "Year to Date", "All Time",]
+                            "Past Year", "All Time"]
 
-            selected_range = st.radio(
+            date_selector = st.radio(
                 label="None",
                 label_visibility="hidden",
                 options=date_options,
                 horizontal=True,
                 key="date_selector"
             )
-            if selected_range == date_options[0]:  # Custom
+            if date_selector == date_options[0]:  # Custom
                 pass  # Keep self.d as is for custom range
-            elif selected_range == date_options[1]:  # Past Month
+            elif date_selector == date_options[1]:  # Past Month
                 self.date_range = (
                     self.today - datetime.timedelta(days=30), self.today)
-            elif selected_range == date_options[2]:  # Past Year
+            elif date_selector == date_options[2]:  # Past Year
                 self.date_range = (
                     self.today - datetime.timedelta(days=365), self.today)
-            elif selected_range == date_options[3]:  # Year to Date
-                self.date_range = (datetime.date(
-                    self.today.year, 1, 1), self.today)
-            elif selected_range == date_options[4]:  # All Time
+            elif date_selector == date_options[3]:  # All Time
                 self.date_range = (datetime.date(2019, 6, 14), self.today)
+            # elif date_selector == date_options[5]:  # All Time
+            #     this_year = datetime.datetime.now().year
+            #     this_month = datetime.datetime.now().month
+            #     report_year = st.selectbox("", range(this_year, this_year - 2, -1))
+            #     month_abbr = calendar.month_abbr[1:]
+            #     report_month_str = st.radio("", month_abbr, index=this_month - 1, horizontal=True)
+            #     report_month = month_abbr.index(report_month_str) + 1
+
+            # source_options = ["Checking", "Cashapp", "Both"]
+            # source_selector = st.radio(
+            #     label="None",
+            #     label_visibility="hidden",
+            #     options=source_options,
+            #     horizontal=True,
+            #     key="source_selector"
+            # )
+            # if source_selector == source_options[0]:
+            #     self.source = source_options[0]
+            # elif source_selector == source_options[1]:
+            #     self.source = source_options[1]
+            # else:
+            #     self.source = ""
 
         # Update session state and reload data if changed
         if self.date_range != st.session_state.date_range:
             st.session_state.date_range = self.date_range
             self.load_data()
             st.rerun()
+        # Update session state and reload data if changed
+        if self.source != st.session_state.source:
+            st.session_state.source = self.source
+            self.load_data()
+            st.rerun()
+
 
     # Render balances
 
@@ -254,8 +306,8 @@ class TreasuryDashboard:
                 int(r*255), int(g*255), int(b*255)))
         return shades
 
-    #need to fix pi chart not having anything to render
-    def render_pi_chart(self):
+    # need to fix pi chart not having anything to render
+    def render_pie_chart(self):
         # Shared categories (excluding "Uncategorized") for consistent coloring
         categories = sorted(set(self.incomes["Category"]).union(
             set(self.expenses["Category"])))
@@ -331,19 +383,121 @@ class TreasuryDashboard:
         fig = PlotlyBubbleChart.plot_bubble_chart_plotly(df, plot_diameter=500)
         st.plotly_chart(fig)
 
+    def render_dues_plot(self):
+        # Dropdown selector for term
+        terms = pd.read_sql(
+            "SELECT DISTINCT PeriodStart FROM DuesTable ORDER BY PeriodStart DESC", self.connection)
+        self.term = st.selectbox("📅 Select Term", terms['PeriodStart'])
+        if self.term != st.session_state.term:
+            st.session_state.term = self.term
+            self.load_data()
+            st.rerun()
+
+        self.dues = self.dues[self.dues["PeriodStart"] == self.term]
+        print(self.dues)
+        
+        dues_status = (
+            self.dues
+            .groupby(["GBId", "MemberName", "PeriodStart", "Amount", "TransactionId"], as_index=False)
+            .agg({"AmountPaid": "sum"})   # sum all payments for the due
+        )
+        print(self.dues)
+        # --- Compute summary values ---
+        expected_dues = dues_status["Amount"].sum()
+
+        # Total actually paid (sum of PaymentAmount where not null)
+        total_paid = dues_status["AmountPaid"].fillna(0).sum()
+
+        # Missed revenue = what was expected but not collected
+        missed_revenue = expected_dues - total_paid
+
+        # --- Streamlit metrics ---
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.metric("Expected Dues", f"${expected_dues:,.2f}")
+
+        with col2:
+            st.metric("Collected Dues", f"${total_paid:,.2f}")
+
+        with col3:
+            st.metric("Missed Revenue", f"${missed_revenue:,.2f}")
+
+        # Compute remaining balance
+        dues_status["Remaining"] = dues_status["Amount"] - dues_status["AmountPaid"].fillna(0)
+
+        # Determine status based on payments vs due amount
+        dues_status["Status"] = np.where(
+            dues_status["Remaining"] <= 0, "Paid",
+            np.where(dues_status["AmountPaid"] > 0, "Partial", "Unpaid")
+        )
+ 
+        # --- Pie chart ---
+        status_counts = dues_status.groupby(
+            "Status").size().reset_index(name="Count")
+        print(status_counts)
+        
+        # gold_shades = self.generate_shades("#a07400", len(status_counts))
+        # print(gold_shades)
+        # color_mapping = {status: shade for status,
+        #                  shade in zip(status_counts.iloc[::-1,0], gold_shades)}
+        
+        # print(color_mapping)
+        color_mapping = {
+            "Paid": "#228B22",
+            "Partial": "#FFBF00",
+            "Unpaid": "#D22B2B	"
+        }
+
+        pie = alt.Chart(status_counts).mark_arc().encode(
+            theta="Count",
+            color=alt.Color("Status:N", scale=alt.Scale(domain=list(color_mapping.keys()),
+                                                          range=list(color_mapping.values())),
+                                title="Year"),
+            tooltip=["Status", "Count"]
+        )
+
+        label = (
+            alt.Chart(status_counts)
+            # adjust radius for placement
+            .mark_text(radius=100, size=25, color="white")
+            .encode(
+                text="Count",
+                theta=alt.Theta("Count", stack=True),
+            )
+        )
+
+        st.altair_chart(pie + label, use_container_width=True)
+        dues_status = dues_status.sort_values(by="Status")
+
+        def highlight_status(row):
+            if row["Status"] == "Paid":
+                return ["color: white; background-color: #228B22"] * len(row)  # light green
+            elif row["Status"] == "Partial":
+                return ["color: white; background-color: #FFBF00"] * len(row)  # amber  Citrine:#E4D00A
+            else:
+                return ["color: white; background-color:  #D22B2B"] * len(row)  # light red
+
+        st.subheader("💳 Dues Status by Member")
+        styled_df = dues_status[["GBId", "TransactionId", "MemberName", "PeriodStart", "Amount", "AmountPaid", "Status"]] \
+            .style.apply(highlight_status, axis=1)
+        # adjust height so all rows show
+        st.dataframe(styled_df, use_container_width=True, row_height=40, height=(40 * (len(dues_status) + 1)))
+
     # Transaction editor
+
     def render_transaction_editor(self):
         editor = st.data_editor(
             self.transaction_notes_table,
             num_rows="fixed",
-            column_order=('Id', 'Date', 'Amount', 'Source',
+            column_order=('TransactionId', 'Date', 'Amount', 'Source',
                           'Description', 'Category', 'Notes'),
-            disabled=['Id', 'Date', 'Amount', 'Source', 'Description'],
+            disabled=['NoteId', 'Date', 'Amount', 'Source', 'Description'],
             use_container_width=True
         )
         if st.button("Save Changes"):
             # Only keep rows where Category or Notes are non-empty
-            edits = editor[['Id', 'Category', 'Notes']].copy()
+            edits = editor[['TransactionId', 'Category', 'Notes']].copy()
             # drop rows where both are NaN
             edits = edits.dropna(how="all", subset=["Category", "Notes"])
             edits = edits[(edits["Category"].astype(str).str.strip() != "") |
@@ -360,10 +514,10 @@ class TreasuryDashboard:
                     cursor = conn.cursor()
                     cursor.execute(
                         '''
-                        UPDATE notesTable
-                        SET Category = (SELECT Category FROM Edits WHERE Edits.Id = notesTable.Id),
-                            Notes    = (SELECT Notes FROM Edits WHERE Edits.Id = notesTable.Id)
-                        WHERE Id IN (SELECT Id FROM Edits)
+                        UPDATE NoteTable
+                        SET Category = (SELECT Category FROM Edits WHERE Edits.Id = NoteTable.NoteId),
+                            Notes    = (SELECT Notes FROM Edits WHERE Edits.Id = NoteTable.NoteId)
+                        WHERE NoteId IN (SELECT NoteId FROM Edits)
                         '''
                     )
                     cursor.execute("DROP TABLE IF EXISTS Edits")
@@ -377,7 +531,7 @@ class TreasuryDashboard:
         # Column 1 → Export Report to Word.File
         if st.button("Export Report to Word File", key="generate_report"):
             report = report_generator.TreasurerReport(self.date_range[0], self.date_range[1], self.transaction_notes_table, self.initialBalance,
-                                     self.currentBalance, self.deposits, self.deposits['Amount'].sum(), self.withdrawals, self.withdrawals['Amount'].sum())
+                                                      self.currentBalance, self.deposits, self.deposits['Amount'].sum(), self.withdrawals, self.withdrawals['Amount'].sum())
             report.build()
             # report.open()
             st.success("Report Generated Successfully")
@@ -416,7 +570,7 @@ class TreasuryDashboard:
         color_mapping = {year: shade for year,
                          shade in zip(years[::-1], gold_shades)}
         # reverse so latest year gets lightest
-
+        
         # Map colors to a new column
         monthly["Color"] = monthly["Year"].map(color_mapping)
         latest_year = max(years)

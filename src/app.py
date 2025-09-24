@@ -1,7 +1,8 @@
 import streamlit as st
 from dashboard import TreasuryDashboard
+import ingest
 
-DB_PATH = "../data/db/database.db"
+DB_PATH = "./data/db/database.db"
 
 if __name__ == "__main__":
     # Check if the dashboard is already in session_state
