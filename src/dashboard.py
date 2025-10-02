@@ -36,7 +36,7 @@ class TreasuryDashboard:
         sqlite3.register_converter("DATE", lambda date: datetime.datetime.strptime(
             date.decode(), "%Y-%m-%d").date())
 
-        self.ingestor = ingest.DataIngestor(db_path)
+        self.data_manager = ingest.DataManager(db_path)
         # self.ingestor.create_database()   # create schema
         # if not os.path.exists(db_path):
         #     self.ingestor.create_database()   # create schema
@@ -56,7 +56,7 @@ class TreasuryDashboard:
         self.date_range = st.session_state.date_range
 
         if "source" not in st.session_state:
-            st.session_state.source = "Checking"
+            st.session_state.source = ""
         self.source = st.session_state.source
 
         if "term" not in st.session_state:
@@ -64,8 +64,9 @@ class TreasuryDashboard:
         self.term = st.session_state.term
 
         # Load initial data
-        self.load_data()
-
+        start_date, end_date  = pd.Timestamp(self.date_range[0]), pd.Timestamp(self.date_range[1])
+        self.data = self.data_manager.load_data(start_date, end_date,self.source)
+        self.dues_data = self.data_manager.load_dues(start_date, end_date)
     # Render dashboard
     def render_dashboard(self):
         """Function"""
@@ -96,87 +97,7 @@ class TreasuryDashboard:
         with dues:
             self.render_dues_plot()
 
-    def load_data(self):
-        start_date = pd.Timestamp(self.date_range[0])
-        end_date = pd.Timestamp(self.date_range[1])
-
-        # Load Transaction Notes Table
-        SQL_QUERY = """
-            SELECT
-                t.TransactionId,
-                t.Date as "Date [DATE]",
-                t.Amount as "Amount [DECIMAL]",
-                t.Source,
-                t.Description,
-                n.Category,
-                n.Notes
-            FROM TransactionTable t
-            LEFT JOIN NoteTable n
-                ON t.TransactionId = n.NoteId
-        """
-        self.transaction_notes_table = pd.read_sql(
-            SQL_QUERY,
-            self.connection,
-            parse_dates=["Date"],
-        )
-
-        self.ingestor.load_members()
-           # Query dues and payments for that term
-        query = f"""
-        SELECT
-            d.DueId, d.GBId, t.TransactionID, m.MemberName, d.PeriodStart, d.Amount, t.Amount as AmountPaid
-        FROM DuesTable d
-        LEFT JOIN PaymentsTable p
-            ON d.DueId = p.DueId
-        LEFT JOIN MemberTable m
-            ON m.GBId = d.GBId
-        LEFT JOIN TransactionTable t
-            ON t.TransactionID = p.TransactionId
-        """  
-        self.dues = pd.read_sql(query, self.connection)
-
-        # Preprocess Data
-        df = self.transaction_notes_table.copy()
-        df["Date"] = pd.to_datetime(df["Date"]).dt.date
-        df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
-        df = df[df["Source"] == self.source] if self.source else df
-
-        # Fill missing/blank categories
-        df["Category"] = df["Category"].fillna("Uncategorized")
-        df.loc[df["Category"].str.strip() == "", "Category"] = "Uncategorized"
-
-        # Compute Balances
-        balance_df = df.sort_values("Date").assign(
-            Balance=lambda x: x["Amount"].cumsum())
-        self.balanceTable = balance_df[["Date", "Balance"]]
-
-        self.initialBalance = df.loc[df["Date"]
-                                     < start_date.date(), "Amount"].sum()
-        self.currentBalance = df.loc[df["Date"]
-                                     <= end_date.date(), "Amount"].sum()
-
-        # Apply filters (date range + source)
-        mask = (df["Date"].between(start_date.date(), end_date.date()))
-        filtered = df.loc[mask]
-
-        # Receipts and Expenditures
-        self.deposits = filtered[filtered["Amount"] > 0]
-        self.withdrawals = filtered[filtered["Amount"] < 0]
-
-        # print(self.deposits)
-        # Income and Expense Summaries
-        self.incomes = self.deposits.groupby(
-            "Category", as_index=False)["Amount"].sum()
-        self.incomes["Labels"] = self.incomes["Category"] + " – " + \
-            (self.incomes["Amount"] / self.incomes["Amount"].sum()
-             * 100).round(1).astype(str) + "%"
-        self.expenses = self.withdrawals.groupby(
-            "Category", as_index=False)["Amount"].sum()
-        self.expenses["Labels"] = self.expenses["Category"] + " - " + (self.expenses["Amount"].abs(
-        ) / self.expenses["Amount"].abs().sum() * 100).round(1).astype(str) + "%"
-
     # Header Section (logo + title inline)
-
     def render_header(self):
         col1, col2 = st.columns([1, 9])
         with col1:
@@ -188,106 +109,119 @@ class TreasuryDashboard:
 
     # Render date selector
     def render_date_selector(self):
-        col1, col2 = st.columns([2, 8])
+        col1, col2 = st.columns([3, 6])
         with col1:
-            self.date_range = st.date_input(
-                label="None",
-                label_visibility="hidden",
-                key="custom_date_range",
-                format="MM.DD.YYYY",
-                value=self.date_range
+            month_range = pd.date_range(start="2019-06-01", end=self.today, freq="MS")[::-1]
+            month_options = ["Custom"] + [d.strftime("%B %Y") for d in month_range]
+
+            selected_option = st.selectbox(
+                "Date Range:",
+                options=month_options,
+                index=1,  # Default = latest month
+                key="month_selector"
             )
-            # # Result
-            # st.text(f'{report_year} {report_month_str}')
+
+            if selected_option == "Custom":
+                # Reuse your old radio selector
+                date_options = ["Custom", "Past Month", "Past Year", "All Time"]
+                date_selector = st.radio(
+                    label="None",
+                    label_visibility="hidden",
+                    options=date_options,
+                    horizontal=True,
+                    key="date_selector"
+                )
+
+                if date_selector == "Custom":  
+                    self.date_range = st.date_input(
+                    label="None",
+                    label_visibility="hidden",
+                    key="custom_date_range",
+                    format="MM.DD.YYYY",
+                    value=self.date_range
+                    )
+                    pass  # Keep self.date_range as-is for a user-defined custom picker
+                elif date_selector == "Past Month":
+                    self.date_range = (self.today - datetime.timedelta(days=30), self.today)
+                elif date_selector == "Past Year":
+                    self.date_range = (self.today - datetime.timedelta(days=365), self.today)
+                elif date_selector == "All Time":
+                    self.date_range = (datetime.date(2019, 6, 14), self.today)
+
+            else:
+                # Parse selected month into start/end date
+                selected_date = datetime.datetime.strptime(selected_option, "%B %Y")
+                start_date = selected_date.replace(day=1).date()
+                next_month = (selected_date.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
+                end_date = (next_month - datetime.timedelta(days=1)).date()
+                self.date_range = (start_date, end_date)
         with col2:
-            date_options = ["Custom", "Past Month",
-                            "Past Year", "All Time"]
-
-            date_selector = st.radio(
-                label="None",
-                label_visibility="hidden",
-                options=date_options,
+            source_options = ["Both", "Checking", "Cashapp"]
+            source_selector = st.radio(
+                label="Source",
+                options=source_options,
                 horizontal=True,
-                key="date_selector"
+                key="source_selector"
             )
-            if date_selector == date_options[0]:  # Custom
-                pass  # Keep self.d as is for custom range
-            elif date_selector == date_options[1]:  # Past Month
-                self.date_range = (
-                    self.today - datetime.timedelta(days=30), self.today)
-            elif date_selector == date_options[2]:  # Past Year
-                self.date_range = (
-                    self.today - datetime.timedelta(days=365), self.today)
-            elif date_selector == date_options[3]:  # All Time
-                self.date_range = (datetime.date(2019, 6, 14), self.today)
-            # elif date_selector == date_options[5]:  # All Time
-            #     this_year = datetime.datetime.now().year
-            #     this_month = datetime.datetime.now().month
-            #     report_year = st.selectbox("", range(this_year, this_year - 2, -1))
-            #     month_abbr = calendar.month_abbr[1:]
-            #     report_month_str = st.radio("", month_abbr, index=this_month - 1, horizontal=True)
-            #     report_month = month_abbr.index(report_month_str) + 1
+            if source_selector == source_options[0]:
+                self.source = ""
+            elif source_selector == source_options[1]:
+                self.source = source_options[1]
+            elif source_selector == source_options[2]:
+                self.source = source_options[2]
 
-            # source_options = ["Checking", "Cashapp", "Both"]
-            # source_selector = st.radio(
-            #     label="None",
-            #     label_visibility="hidden",
-            #     options=source_options,
-            #     horizontal=True,
-            #     key="source_selector"
-            # )
-            # if source_selector == source_options[0]:
-            #     self.source = source_options[0]
-            # elif source_selector == source_options[1]:
-            #     self.source = source_options[1]
-            # else:
-            #     self.source = ""
+
 
         # Update session state and reload data if changed
         if self.date_range != st.session_state.date_range:
             st.session_state.date_range = self.date_range
-            self.load_data()
-            st.rerun()
+            start_date, end_date = pd.Timestamp(self.date_range[0]), pd.Timestamp(self.date_range[1])
+            self.data = self.data_manager.load_data(start_date, end_date, self.source)
+            self.dues_data = self.data_manager.load_dues(start_date, end_date)
+            # st.rerun()
         # Update session state and reload data if changed
         if self.source != st.session_state.source:
             st.session_state.source = self.source
-            self.load_data()
-            st.rerun()
+            start_date, end_date = pd.Timestamp(self.date_range[0]), pd.Timestamp(self.date_range[1])
+            self.data = self.data_manager.load_data(start_date, end_date, self.source)
+            self.dues_data = self.data_manager.load_dues(start_date, end_date)
+            # st.rerun()
 
 
     # Render balances
-
     def render_balances(self):
         st.subheader("Account Balances")
         col1, col2, col3, col4 = st.columns(4)
-        delta = self.currentBalance - self.initialBalance
+        delta = self.data["current_balance"] - self.data["initial_balance"]
         sign = '-' if delta < 0 else ''
         with col1:
             st.metric(
                 label="Current Balance",
-                value=f"${self.currentBalance:,.2f}",
+                value=f"${self.data['current_balance']:,.2f}",
                 delta=f"{sign}${abs(delta):,.2f}"
             )
         with col2:
-            st.metric("Initial Balance", f"${self.initialBalance:,.2f}")
+            st.metric("Initial Balance", f"${self.data['initial_balance']:,.2f}")
         with col3:
-            deposits_sum = self.deposits['Amount'].sum()
+            deposits_sum = self.data["deposits_total"]
             st.metric("Total Receipts", f"${deposits_sum:,.2f}")
         with col4:
-            withdrawals_sum = self.withdrawals['Amount'].sum()
+            withdrawals_sum = self.data["withdrawals_total"]
             st.metric("Total Expenditures", f"${withdrawals_sum:,.2f}")
 
     # Render balance chart
 
     def render_balance_chart(self):
         st.subheader("Balance Over Time")
-        chart = alt.Chart(self.balanceTable).mark_line(point=True).encode(
+        chart = alt.Chart(self.data["balance_table"]).mark_line(point=True).encode(
             x=alt.X("Date", scale=alt.Scale(domain=[
                     st.session_state.date_range[0], st.session_state.date_range[1]], clamp=True, nice=False)),
             y="Balance",
             color=alt.value("#a07400")
         )
         st.altair_chart(chart, use_container_width=True)
+        # st.dataframe(self.data["balance_table"])
+
 
     # Function to lighten/darken hex colors
     def generate_shades(self, hex_color, n_shades):
@@ -309,8 +243,8 @@ class TreasuryDashboard:
     # need to fix pi chart not having anything to render
     def render_pie_chart(self):
         # Shared categories (excluding "Uncategorized") for consistent coloring
-        categories = sorted(set(self.incomes["Category"]).union(
-            set(self.expenses["Category"])))
+        categories = sorted(set(self.data["incomes"]["Category"]).union(
+            set(self.data["expenses"]["Category"])))
         categories_no_uncat = [
             cat for cat in categories if cat != "Uncategorized"]
 
@@ -329,14 +263,14 @@ class TreasuryDashboard:
         col1, col2 = st.columns(2)
 
         # Income chart
-        chart1 = alt.Chart(self.incomes).mark_arc().encode(
+        chart1 = alt.Chart(self.data["incomes"]).mark_arc().encode(
             theta="Amount",
             color=alt.Color("Category:N", scale=color_scale),
             tooltip=["Category", "Amount"]
         )
 
         labels1 = (
-            alt.Chart(self.incomes)
+            alt.Chart(self.data["incomes"])
             # adjust radius for placement
             .mark_text(radius=100, size=12, color="white")
             .encode(
@@ -348,14 +282,14 @@ class TreasuryDashboard:
         chart1 = chart1 + labels1
 
         # Expense chart
-        chart2 = alt.Chart(self.expenses).mark_arc().encode(
+        chart2 = alt.Chart(self.data["expenses"]).mark_arc().encode(
             theta="Amount",
             color=alt.Color("Category:N", scale=color_scale),
             tooltip=["Category", "Amount"]
         )
 
         labels2 = (
-            alt.Chart(self.expenses)
+            alt.Chart(self.data["expenses"])
             .mark_text(radius=100, size=12, color="white")
             .encode(
                 text="Labels",
@@ -385,110 +319,56 @@ class TreasuryDashboard:
 
     def render_dues_plot(self):
         # Dropdown selector for term
-        terms = pd.read_sql(
-            "SELECT DISTINCT PeriodStart FROM DuesTable ORDER BY PeriodStart DESC", self.connection)
-        self.term = st.selectbox("📅 Select Term", terms['PeriodStart'])
-        if self.term != st.session_state.term:
-            st.session_state.term = self.term
-            self.load_data()
-            st.rerun()
+        # terms = pd.read_sql(
+        #     "SELECT DISTINCT PeriodStart FROM DuesTable ORDER BY PeriodStart DESC", 
+        #     self.connection
+        # )
+        # self.term = st.selectbox("📅 Select Term", terms['PeriodStart'])
+        # if self.term != st.session_state.term:
+        #     st.session_state.term = self.term
+        #     dues_data = self.data_manager.load_dues(self.term)
 
-        self.dues = self.dues[self.dues["PeriodStart"] == self.term]
-        print(self.dues)
-        
-        dues_status = (
-            self.dues
-            .groupby(["GBId", "MemberName", "PeriodStart", "Amount" ], as_index=False)
-            .agg({"AmountPaid": "sum"})   # sum all payments for the due
-        )
-        print(self.dues)
-        # --- Compute summary values ---
-        expected_dues = dues_status["Amount"].sum()
-
-        # Total actually paid (sum of PaymentAmount where not null)
-        total_paid = dues_status["AmountPaid"].fillna(0).sum()
-
-        # Missed revenue = what was expected but not collected
-        missed_revenue = expected_dues - total_paid
+        dues_status = self.dues_data["dues_status"]
+        expected_dues = self.dues_data["expected_dues"]
+        total_paid = self.dues_data["total_paid"]
+        missed_revenue = self.dues_data["missed_revenue"]
+        status_counts = self.dues_data["status_counts"]
 
         # --- Streamlit metrics ---
         col1, col2, col3 = st.columns(3)
-
         with col1:
             st.metric("Expected Dues", f"${expected_dues:,.2f}")
-
         with col2:
             st.metric("Collected Dues", f"${total_paid:,.2f}")
-
         with col3:
             st.metric("Missed Revenue", f"${missed_revenue:,.2f}")
 
-        # Compute remaining balance
-        dues_status["Remaining"] = dues_status["Amount"] - dues_status["AmountPaid"].fillna(0)
-
-        # Determine status based on payments vs due amount
-        dues_status["Status"] = np.where(
-            dues_status["Remaining"] <= 0, "Paid",
-            np.where(dues_status["AmountPaid"] > 0, "Partial", "Unpaid")
-        )
- 
         # --- Pie chart ---
-        status_counts = dues_status.groupby(
-            "Status").size().reset_index(name="Count")
-        print(status_counts)
-        
-        # gold_shades = self.generate_shades("#a07400", len(status_counts))
-        # print(gold_shades)
-        # color_mapping = {status: shade for status,
-        #                  shade in zip(status_counts.iloc[::-1,0], gold_shades)}
-        
-        # print(color_mapping)
-        color_mapping = {
-            "Paid": "#228B22",
-            "Partial": "#FFBF00",
-            "Unpaid": "#D22B2B	"
-        }
-
+        color_mapping = {"Paid": "#228B22", "Partial": "#FFBF00", "Unpaid": "#D22B2B"}
         pie = alt.Chart(status_counts).mark_arc().encode(
             theta="Count",
-            color=alt.Color("Status:N", scale=alt.Scale(domain=list(color_mapping.keys()),
-                                                          range=list(color_mapping.values())),
-                                title="Year"),
+            color=alt.Color("Status:N", scale=alt.Scale(
+                domain=list(color_mapping.keys()),
+                range=list(color_mapping.values())),
+                title="Year"),
             tooltip=["Status", "Count"]
         )
-
-        label = (
-            alt.Chart(status_counts)
-            # adjust radius for placement
-            .mark_text(radius=100, size=25, color="white")
-            .encode(
-                text="Count",
-                theta=alt.Theta("Count", stack=True),
-            )
+        label = alt.Chart(status_counts).mark_text(radius=100, size=25, color="white").encode(
+            text="Count",
+            theta=alt.Theta("Count", stack=True),
         )
-
         st.altair_chart(pie + label, use_container_width=True)
-        dues_status = dues_status.sort_values(by="Status")
-
-        def highlight_status(row):
-            if row["Status"] == "Paid":
-                return ["color: white; background-color: #228B22"] * len(row)  # light green
-            elif row["Status"] == "Partial":
-                return ["color: white; background-color: #FFBF00"] * len(row)  # amber  Citrine:#E4D00A
-            else:
-                return ["color: white; background-color:  #D22B2B"] * len(row)  # light red
 
         st.subheader("💳 Dues Status by Member")
-        styled_df = dues_status[["GBId", "MemberName", "PeriodStart", "Amount", "AmountPaid", "Status"]] \
-            .style.apply(highlight_status, axis=1)
-        # adjust height so all rows show
-        st.dataframe(styled_df, use_container_width=True, row_height=40, height=(40 * (len(dues_status) + 1)))
+    
+        st.dataframe(self.dues_data["styled_df"], use_container_width=True, row_height=40, height=(40 * (len(dues_status) + 1)))
+
 
     # Transaction editor
 
     def render_transaction_editor(self):
         editor = st.data_editor(
-            self.transaction_notes_table,
+            self.data["transaction_notes_table"],
             num_rows="fixed",
             column_order=('TransactionId', 'Date', 'Amount', 'Source',
                           'Description', 'Category', 'Notes'),
@@ -509,15 +389,15 @@ class TreasuryDashboard:
                     edits.to_sql("Edits", conn, index=False,
                                  if_exists="replace")
                     edits.to_csv(
-                        f"./Notes/edits_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", index=False)
+                        f"./data/Backups/edits_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", index=False)
 
                     cursor = conn.cursor()
                     cursor.execute(
                         '''
                         UPDATE NoteTable
-                        SET Category = (SELECT Category FROM Edits WHERE Edits.Id = NoteTable.NoteId),
-                            Notes    = (SELECT Notes FROM Edits WHERE Edits.Id = NoteTable.NoteId)
-                        WHERE NoteId IN (SELECT NoteId FROM Edits)
+                        SET Category = (SELECT Category FROM Edits WHERE Edits.TransactionId = NoteTable.NoteId),
+                            Notes    = (SELECT Notes FROM Edits WHERE Edits.TransactionId = NoteTable.NoteId)
+                        WHERE TransactionId IN (SELECT TransactionId FROM Edits)
                         '''
                     )
                     cursor.execute("DROP TABLE IF EXISTS Edits")
@@ -530,24 +410,26 @@ class TreasuryDashboard:
         # st.header("Data & Reports")
         # Column 1 → Export Report to Word.File
         if st.button("Export Report to Word File", key="generate_report"):
-            report = report_generator.TreasurerReport(self.date_range[0], self.date_range[1], self.transaction_notes_table, self.initialBalance,
-                                                      self.currentBalance, self.deposits, self.deposits['Amount'].sum(), self.withdrawals, self.withdrawals['Amount'].sum())
+            start_date, end_date  = pd.Timestamp(self.date_range[0]), pd.Timestamp(self.date_range[1])
+
+            report = report_generator.TreasurerReport(start_date, end_date, self.data_manager)
             report.build()
-            # report.open()
+            report.save()
+            report.open()
             st.success("Report Generated Successfully")
 
         # Column 2 → Load Data from CSV
         if st.button("Load Data from CSV", key="load_csv"):
-            self.ingestor.ingest_data()
+            self.data_manager.read_data()
             st.success("Data Ingested Successfully")
-            st.rerun()
+            # st.rerun()
 
         # Column 3 → Reset Database with confirmation dialog
         if st.button("Reset Database", key="reset_db"):
             self.confirm_reset()
 
     def render_yoy_chart(self):
-        df = self.transaction_notes_table.copy()
+        df = self.data["transaction_notes_table"]
 
         # Ensure correct types
         df["Date"] = pd.to_datetime(df["Date"])
@@ -615,6 +497,6 @@ class TreasuryDashboard:
             icon="🚨"
         )
         if st.button("Confirm Reset"):
-            self.ingestor.create_database()
+            self.data_manager.create_database()
             st.rerun()
             st.success("Database Reset Successfully")

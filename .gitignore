@@ -3,3 +3,4 @@ data/backups
 reports/
 env/
 src/cameltoe.pt
+*.DS_Store

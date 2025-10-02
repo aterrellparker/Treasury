@@ -7,8 +7,8 @@ import ingest
 
 DB_PATH = "./database.db"
 
-d = ingest.DataIngestor(DB_PATH)
-df = d.load_members()
+d = ingest.DataManager(DB_PATH)
+df = d._create_due_dates()
 
 df.to_csv('dues.csv')
 # Step 4: Count members owing dues per cycle

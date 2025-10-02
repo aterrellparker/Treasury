@@ -6,13 +6,17 @@ import base64
 import datetime
 
 import pandas as pd
+from sql_queries import *
 
-class DataIngestor:
+class DataManager:
     def __init__(self, db_path="database.db"):
         self.db_path = db_path
+        if os.path.exists(self.db_path):
+            os.remove(self.db_path)
         if not os.path.exists(self.db_path):
+            self.connection = sqlite3.connect(self.db_path)
             self.create_database()
-            self.ingest_data()
+            self.read_data()
 
 
     # ---------------------------
@@ -25,99 +29,131 @@ class DataIngestor:
             hashlib.md5(data.encode()).digest()
         ).decode()
 
-    # ---------------------------
-    # Create fresh database
-    # ---------------------------
+
     def create_database(self):
         """Create a new database with base schema and initial balance."""
-        if os.path.exists(self.db_path):
-            os.remove(self.db_path)
+        # if os.path.exists(self.db_path):
+        #     os.remove(self.db_path)
 
-        connection = sqlite3.connect(self.db_path)
-        cursor = connection.cursor()
-        connection.execute("PRAGMA foreign_keys = ON")
+        cursor = self.connection.cursor()
+        self.connection.execute("PRAGMA foreign_keys = ON")
 
         # Register hash function
-        connection.create_function("generate_id", 1, self.generate_id)
+        self.connection.create_function("generate_id", 1, self.generate_id)
 
         # Create tables
-        cursor.execute(
-            """
-            CREATE TABLE TransactionTable (
-                TransactionId TEXT PRIMARY KEY,
-                Date DATE,
-                Amount DECIMAL(18, 2),
-                Source TEXT,
-                Description TEXT
+        cursor.execute(CREATE_TRANSACTION_TABLE)
+        cursor.execute(INSERT_INITIAL_BALANCE)
+        cursor.execute(RECONCILE_CASHAPP_MARCH)
+        cursor.execute(RECONCILE_CASHAPP_APRIL)
+        cursor.execute(CREATE_NOTE_TABLE)
+        cursor.execute(CREATE_MEMBER_TABLE)
+        cursor.execute(CREATE_DUES_TABLE) 
+        cursor.execute(CREATE_DUES_PAYMENTS_TABLE)
+
+
+        self.connection.commit()
+        self.connection.close()
+
+    def read_data(self):
+        """Load all CSV sources into database."""
+        self.connection = sqlite3.connect(self.db_path)
+        cursor = self.connection.cursor()
+    
+        for file in glob.glob("./Data/Raw/Members/*.csv"):
+            df = pd.read_csv(file)
+            df.to_sql("tmp", self.connection, if_exists="append", index=False)
+
+        cursor.execute(INSERT_MEMBERS)
+        cursor.execute(DROP_TMP)
+
+        # --- Checking Data ---
+        for file in glob.glob("./Data/raw/Checking/*.csv"):
+            df = pd.read_csv(file, header=None)
+            df.columns = ["Date", "Amount", "n/a", "Check Number", "Description"]
+            df = df.drop(columns=["n/a", "Check Number"])
+            df["Date"] = pd.to_datetime(df["Date"], format="mixed").dt.strftime("%Y-%m-%d")
+            df["Source"] = "Checking"
+            df["TransactionId"] = (
+                df[["Date", "Amount", "Description"]]
+                .astype(str)
+                .sum(axis=1)
+                .map(self.generate_id)
             )
-            """
-        )
-        cursor.execute(
-            """
-            INSERT INTO TransactionTable (TransactionId, Date, Amount, Source, Description)
-            VALUES (
-                generate_id('1941-05-23' || '0' || 'Initial Balance'),
-                '1941-05-23',
-                0,
-                'Checking',
-                'Initial Balance'
+            df = df[["TransactionId", "Date", "Amount", "Source", "Description"]]
+            df.to_sql("tmp", self.connection, if_exists="append", index=False)
+
+        # --- Statements Data ---
+        for file in glob.glob("./Data/raw/Statements/*.csv"):
+            df = pd.read_csv(file, header=None)
+            df.columns = ["Date", "Description", "Amount"]
+            df["Date"] = pd.to_datetime(df["Date"], format="mixed").dt.strftime("%Y-%m-%d")
+            df["Source"] = "Checking"
+            df["TransactionId"] = (
+                df[["Date", "Amount", "Description"]]
+                .astype(str)
+                .sum(axis=1)
+                .map(self.generate_id)
             )
-            """
-        )
-        cursor.execute(
-            """
-            CREATE TABLE NoteTable (
-                NoteId TEXT PRIMARY KEY,
-                Category TEXT,
-                Notes TEXT,
-                FOREIGN KEY (NoteID) REFERENCES TransactionsTable(TransactionID)
+            df = df[["TransactionId", "Date", "Amount", "Source", "Description"]]
+            df.to_sql("tmp", self.connection, if_exists="append", index=False)
+
+        # --- Cashapp Data ---
+        for file in glob.glob("./Data/raw/Cashapp/*.csv"):
+            df = pd.read_csv(file)
+            df["Source"] = "Cashapp"
+            df = df[df["Status"] == "COMPLETE"]
+            df = df.drop(
+                columns=[
+                    "Transaction ID",
+                    "Transaction Type",
+                    "Currency",
+                    "Fee",
+                    "Amount",
+                    "Asset Type",
+                    "Asset Price",
+                    "Asset Amount",
+                    "Status",
+                ]
             )
-            """
-        )
-
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS MemberTable 
-            (
-                GBId TEXT PRIMARY KEY,
-                MemberName TEXT,
-                AlphaID TEXT,
-                InitiationDate DATE,
-                GraduationDate DATE
+            df = df.rename(columns={"Net Amount": "Amount", "Notes": "Description"})
+            df["Date"] = pd.to_datetime(df["Date"].str.split(" ").str[0]).dt.strftime("%Y-%m-%d")
+            df["Amount"] = (
+                df["Amount"]
+                .str.replace(r"[\$,)]", "", regex=True)  # remove $ , )
+                .str.replace(r"\(", "-", regex=True)  # convert ( → -
             )
-            """
-        )
-        cursor.execute(
-            """
-            CREATE TABLE DuesTable (
-                DueID TEXT PRIMARY KEY,
-                GBId TEXT NOT NULL,
-                PeriodStart DATE NOT NULL,
-                PeriodEnd DATE NOT NULL,
-                Amount Decimal(18,2),
-                FOREIGN KEY (GBId) REFERENCES MemberTable(GBId)
-            );
+            df["TransactionId"] = (
+                df[["Date", "Amount", "Description"]]
+                .astype(str)
+                .sum(axis=1)
+                .map(self.generate_id)
+            )
+            #Adding Extra Information After hash to preserve ID's
+            df['Description'] = df[['Description', 'Name of sender/receiver', 'Account']].astype(str).agg(' - '.join, axis=1)
+        
+            df=df.drop(columns=["Name of sender/receiver","Account"])
+            df.to_sql("tmp", self.connection, if_exists="append", index=False)
 
-            """
-        )                 
-        cursor.execute('''
-            CREATE TABLE DuesPayments (
-            DuesPaymentId INTEGER PRIMARY KEY AUTOINCREMENT,
-            DueId TEXT NOT NULL,
-            TransactionId TEXT NOT NULL,
-            FOREIGN KEY (DueId) REFERENCES DuesTable(DueId),
-            FOREIGN KEY (TransactionId) REFERENCES TransactionTable(TransactionId)
-            );
-        ''')
+        payments = pd.read_csv("./data/raw/DuePayments.csv")  
+        payments.to_sql("PaymentsTable", self.connection, if_exists="replace", index=False)
+        
+        # Merge into main table
+        cursor.execute(INSERT_TRANSACTIONS)
+        cursor.execute(DROP_TMP)
 
+        # --- Notes Table (latest edits) ---
+        notes_files = glob.glob("./Data/Backups/edits_*.csv")
+        if notes_files:
+            latest_file = max(notes_files, key=os.path.getctime)
+            description_data = pd.read_csv(latest_file)
+            description_data.to_sql("NoteTable", self.connection, if_exists="replace", index=False)
 
-        connection.commit()
-        connection.close()
-
-    def load_members(self):
-        # print(self.db_path)
-        connection = sqlite3.connect(self.db_path)
-        cursor = connection.cursor()
+        self.connection.commit()
+    
+    def _create_due_dates(self):
+        self.connection = sqlite3.connect(self.db_path)
+        cursor = self.connection.cursor()
       
         # start_year = members['InitiationDate'].min().date()
         end_year = datetime.datetime.today()
@@ -138,13 +174,13 @@ class DataIngestor:
         due_dates['PeriodStart'] = pd.to_datetime(due_dates['PeriodStart']).dt.strftime('%Y-%m-%d')
         due_dates['PeriodEnd']   = pd.to_datetime(due_dates['PeriodEnd']).dt.strftime('%Y-%m-%d')
 
-        due_dates.to_sql("DueDatesTable", connection, if_exists="replace", index=False)
+        due_dates.to_sql("DueDatesTable", self.connection, if_exists="replace", index=False)
 
         # Insert dues using SQL join
         cursor.execute("""
-        INSERT OR IGNORE INTO DuesTable (DueID, GBId, PeriodStart, PeriodEnd, Amount)
+        INSERT OR IGNORE INTO DuesTable (DueId, GBId, PeriodStart, PeriodEnd, Amount)
         SELECT 
-            CAST(STRFTIME('%Y%m', d.PeriodStart) || m.GBId AS TEXT) AS DueID,
+            CAST(STRFTIME('%Y%m', d.PeriodStart) || m.GBId AS TEXT) AS DueId,
             m.GBId,
             d.PeriodStart,
             d.PeriodEnd,
@@ -154,144 +190,138 @@ class DataIngestor:
             ON d.PeriodStart >= m.InitiationDate
             AND (m.GraduationDate IS NULL OR d.PeriodStart <= m.GraduationDate)
         """)
-
-        
-
-
-        connection.commit()
-        # # df = pd.read_sql(FS, connection)#, parse_dates=['PeriodStart','PeriodEnd'])
-        # print("hello")
-        # print(df)
-
-
-        # # Step 2: Cross join with members
-        # due_dates['key'] = 1
-        # members['key'] = 1
-        # all_dues = due_dates.merge(members, on='key').drop(columns='key')
-
-        # # Step 3: Filter active members in that year
-        # active_dues = all_dues[
-        #     (all_dues['InitiationDate'] <= all_dues['PeriodStart']) &
-        #     (
-        #         all_dues['GraduationDate'].isna() |
-        #         (all_dues['GraduationDate'] >= all_dues['PeriodStart'])
-        #     )
-        # ]
-
-
-        # active_dues['Amount'] = 100
-        # active_dues.to_csv('dues.csv')
-        # print(active_dues)
-
-        # # Only keep columns for DuesTable (exclude DueID)
-        # df_to_insert = active_dues[['GBId', 'PeriodStart', 'PeriodEnd', 'Amount']]
-
-        # # Insert into SQLite table without replacing it
-        # df_to_insert.to_sql("DuesTable", connection, if_exists="append", index=False)
-        # #df.to_sql("tmp2", connection, if_exists="append", index=False)
-
-        # # print(active_dues)
-        # return df
-    # Ingest data from CSVs
-    # ---------------------------
-    def ingest_data(self):
-        """Load all CSV sources into database."""
-        connection = sqlite3.connect(self.db_path)
-        cursor = connection.cursor()
+        self.connection.commit()
     
-        for file in glob.glob("./Data/Raw/Members/*.csv"):
-            df = pd.read_csv(file)
-            # df['InitiationDate'] = pd.to_datetime(df['InitiationDate']).dt.strftime('%Y-%m-%d')
-            # df['GraduationDate'] = pd.to_datetime(df['InitiationDate']).dt.strftime('%Y-%m-%d')
-            # df['InitiationDate'] = pd.to_datetime(df['InitiationDate']).dt.strftime('%Y-%m-%d')
 
-            df.to_sql("tmp2", connection, if_exists="append", index=False)
+    def load_data(self, start_date, end_date, source):
+        if source:
+            BASE_QUERY = TRANSACTION_NOTES_QUERY + " WHERE t.Source = ?"
+        else:
+            BASE_QUERY = TRANSACTION_NOTES_QUERY
+        transaction_notes_table, deposits, withdrawals = self._preprocess_transactions(pd.read_sql(BASE_QUERY, self.connection, parse_dates=["Date"], params=(source,) if source else None))
+        balance_table, initial_balance, current_balance = self._compute_balances(transaction_notes_table, start_date, end_date)
 
-        cursor.execute("INSERT OR IGNORE INTO MemberTable SELECT * FROM tmp2")
-        cursor.execute("DROP TABLE IF EXISTS tmp")
+ 
+        filtered = self._apply_filters(transaction_notes_table, start_date, end_date)
+        deposits, withdrawals = self._split_transactions(filtered)
+        deposits_total = deposits['Amount'].sum() 
+        withdrawals_total = withdrawals['Amount'].sum()
 
-        # --- Checking Data ---
-        for file in glob.glob("./Data/raw/Checking/*.csv"):
-            df = pd.read_csv(file, header=None)
-            df.columns = ["Date", "Amount", "n/a", "Check Number", "Description"]
-            df = df.drop(columns=["n/a", "Check Number"])
-            df["Date"] = pd.to_datetime(df["Date"], format="mixed").dt.strftime("%Y-%m-%d")
-            df["Source"] = "Checking"
-            df["TransactionId"] = (
-                df[["Date", "Amount", "Description"]]
-                .astype(str)
-                .sum(axis=1)
-                .map(self.generate_id)
-            )
-            df = df[["TransactionId", "Date", "Amount", "Source", "Description"]]
-            df.to_sql("tmp", connection, if_exists="append", index=False)
+        incomes = deposits.groupby(
+            "Category", as_index=False)["Amount"].sum()
+        incomes["Labels"] = incomes["Category"] + " – " + \
+            (incomes["Amount"] / incomes["Amount"].sum()
+             * 100).round(1).astype(str) + "%"
+        expenses = withdrawals.groupby(
+            "Category", as_index=False)["Amount"].sum()
+        expenses["Labels"] = expenses["Category"] + " - " + (expenses["Amount"].abs(
+        ) / expenses["Amount"].abs().sum() * 100).round(1).astype(str) + "%"
 
-        # --- Statements Data ---
-        for file in glob.glob("./Data/raw/Statements/*.csv"):
-            df = pd.read_csv(file, header=None)
-            df.columns = ["Date", "Description", "Amount"]
-            df["Date"] = pd.to_datetime(df["Date"], format="mixed").dt.strftime("%Y-%m-%d")
-            df["Source"] = "Checking"
-            df["TransactionId"] = (
-                df[["Date", "Amount", "Description"]]
-                .astype(str)
-                .sum(axis=1)
-                .map(self.generate_id)
-            )
-            df = df[["TransactionId", "Date", "Amount", "Source", "Description"]]
-            df.to_sql("tmp", connection, if_exists="append", index=False)
+        return {
+        "transaction_notes_table": transaction_notes_table,
+        "deposits": deposits,
+        "deposits_total": deposits_total,
+        "incomes": incomes,
+        "withdrawals": withdrawals,
+        "withdrawals_total": withdrawals_total,
+        "expenses": expenses,
+        "balance_table": balance_table,
+        "initial_balance": initial_balance,
+        "current_balance": current_balance,
+        # "dues": dues,
+        }
+    
+    def load_dues(self, start_date, end_date):
+        dues = self._load_dues()
 
-        # --- Cashapp Data ---
-        for file in glob.glob("./Data/raw/Cashapp/*.csv"):
-            df = pd.read_csv(file)
-            df["Source"] = "Cashapp"
-            df = df[df["Status"] == "COMPLETE"]
-            df = df.drop(
-                columns=[
-                    "Transaction ID",
-                    "Transaction Type",
-                    "Currency",
-                    "Amount",
-                    "Fee",
-                    "Asset Type",
-                    "Asset Price",
-                    "Asset Amount",
-                    "Status",
-                ]
-            )
-            df = df.rename(columns={"Net Amount": "Amount", "Notes": "Description"})
-            df["Date"] = pd.to_datetime(df["Date"].str.split(" ").str[0]).dt.strftime(
-                "%Y-%m-%d"
-            )
-            df["Amount"] = (
-                df["Amount"]
-                .str.replace(r"[\$,)]", "", regex=True)  # remove $ , )
-                .str.replace(r"\(", "-", regex=True)  # convert ( → -
-            )
-            df["TransactionId"] = (
-                df[["Date", "Amount", "Description"]]
-                .astype(str)
-                .sum(axis=1)
-                .map(self.generate_id)
-            )
-            #Adding Extra Information After hash to preserve ID's
-            df['Description'] = df[['Description', 'Name of sender/receiver', 'Account']].astype(str).agg(' - '.join, axis=1)
-            df=df.drop(columns=["Name of sender/receiver","Account"])
-            df.to_sql("tmp", connection, if_exists="append", index=False)
+           # Convert start/end to strings for comparison
+        if not dues.empty and start_date is not None:
+            start_str = pd.Timestamp(start_date).strftime("%Y-%m-%d")
+            end_str = pd.Timestamp(end_date).strftime("%Y-%m-%d")
+            dues = dues[dues["PeriodStart"] <= start_str]
+            latest_term = dues["PeriodStart"].max()
+            dues = dues[dues["PeriodStart"] == latest_term]
 
-        payments = pd.read_csv("./data/raw/DuePayments.csv")  
-        payments.to_sql("PaymentsTable", connection, if_exists="replace", index=False)
+        dues_status = (
+            dues
+            .groupby(["GBId", "MemberName", "PeriodStart", "Amount" ], as_index=False)
+            .agg({"AmountPaid": "sum"})   # sum all payments for the due
+        )
+        # --- Compute summary values ---
+        expected_dues = dues_status["Amount"].sum()
+
+        # Total actually paid (sum of PaymentAmount where not null)
+        total_paid = dues_status["AmountPaid"].fillna(0).sum()
+
+        # Missed revenue = what was expected but not collected
+        missed_revenue = expected_dues - total_paid
+
+        dues_status["Remaining"] = dues_status["Amount"] - dues_status["AmountPaid"].fillna(0)
+
+        # Determine status based on payments vs due amount
+        dues_status["Status"] = dues_status.apply(
+            lambda row: "Paid" if row["Remaining"] <= 0 
+                        else "Partial" if row["AmountPaid"] > 0 
+                        else "Unpaid",
+            axis=1
+        )
         
-        # Merge into main table
-        cursor.execute("INSERT OR IGNORE INTO TransactionTable SELECT * FROM tmp")
-        cursor.execute("DROP TABLE IF EXISTS tmp")
+        status_counts = dues_status.groupby(
+            "Status").size().reset_index(name="Count")
+        
+                # --- Styled DataFrame ---
+        def highlight_status(row):
+            if row["Status"] == "Paid":
+                return ["color: white; background-color: #228B22"] * len(row)
+            elif row["Status"] == "Partial":
+                return ["color: white; background-color: #FFBF00"] * len(row)
+            else:
+                return ["color: white; background-color: #D22B2B"] * len(row)
+        dues_status = dues_status.sort_values(by=["PeriodStart", "Status", "GBId"], ascending=[False, True, True])
+        styled_df = dues_status[["GBId", "MemberName", "PeriodStart", "Amount", "AmountPaid", "Status"]] \
+            .style.apply(highlight_status, axis=1)
+            # Return everything as a dictionary
+        return {
+            "dues": dues,                    # raw dues
+            "dues_status": dues_status,      # per-member status
+            "expected_dues": expected_dues,  # total expected
+            "total_paid": total_paid,        # total collected
+            "missed_revenue": missed_revenue,# total missed
+            "status_counts": status_counts,   # grouped counts
+            "styled_df": styled_df
+        }
+    
 
-        # --- Notes Table (latest edits) ---
-        notes_files = glob.glob("./Data/Backups/edits_*.csv")
-        if notes_files:
-            latest_file = max(notes_files, key=os.path.getctime)
-            description_data = pd.read_csv(latest_file)
-            description_data.to_sql("NoteTable", connection, if_exists="replace", index=False)
 
-        connection.commit()
-        connection.close()
+    def _load_dues(self):
+        self._create_due_dates()
+        return pd.read_sql(DUES_QUERY, self.connection)
+
+    def _preprocess_transactions(self, df):
+        df = df.copy()
+        df["Date"] = pd.to_datetime(df["Date"]).dt.date
+        df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
+        df["Category"] = df["Category"].fillna("Uncategorized")
+        df.loc[df["Category"].str.strip() == "", "Category"] = "Uncategorized"
+        deposits = df[df["Amount"] > 0]
+        withdrawals = df[df["Amount"] < 0]
+        return df, deposits, withdrawals
+
+    def _compute_balances(self, df, start_date, end_date):
+        balance_df = df.sort_values("Date").assign(
+            Balance=lambda x: x["Amount"].cumsum()
+        )
+        balanceTable = balance_df[["Date", "Balance"]]
+
+        initial = df.loc[df["Date"] < start_date.date(), "Amount"].sum()
+        current = df.loc[df["Date"] <= end_date.date(), "Amount"].sum()
+        return balanceTable, initial, current
+
+    def _apply_filters(self, df, start_date, end_date):
+        mask = df["Date"].between(start_date.date(), end_date.date())
+        return df.loc[mask] 
+    
+    def _split_transactions(self, df):
+        deposits = df[df["Amount"] > 0]
+        withdrawals = df[df["Amount"] < 0]
+        return deposits, withdrawals
