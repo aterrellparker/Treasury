@@ -11,8 +11,9 @@ from sql_queries import *
 class DataManager:
     def __init__(self, db_path="database.db"):
         self.db_path = db_path
-        # if os.path.exists(self.db_path):
-        #     os.remove(self.db_path)
+        if os.path.exists(self.db_path):
+            self.connection = sqlite3.connect(self.db_path)
+
         if not os.path.exists(self.db_path):
             self.connection = sqlite3.connect(self.db_path)
             self.create_database()
