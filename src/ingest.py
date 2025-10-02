@@ -12,7 +12,7 @@ class DataManager:
     def __init__(self, db_path="database.db"):
         self.db_path = db_path
         if os.path.exists(self.db_path):
-            self.connection = sqlite3.connect(self.db_path)
+            self.connection = sqlite3.connect(self.db_path, check_same_thread=False)
 
         if not os.path.exists(self.db_path):
             self.connection = sqlite3.connect(self.db_path)
