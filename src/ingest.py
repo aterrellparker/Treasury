@@ -6,6 +6,7 @@ import base64
 import datetime
 
 import pandas as pd
+
 from sql_queries import *
 
 class DataManager:
@@ -20,9 +21,8 @@ class DataManager:
             self.read_data()
 
 
-    # ---------------------------
+
     # Utility: Hash generator
-    # ---------------------------
     @staticmethod
     def generate_id(data: str) -> str:
         """Generate a unique hash-based ID from input string."""
@@ -51,6 +51,7 @@ class DataManager:
         cursor.execute(CREATE_MEMBER_TABLE)
         cursor.execute(CREATE_DUES_TABLE) 
         cursor.execute(CREATE_DUES_PAYMENTS_TABLE)
+        cursor.execute(CREATE_BUDGET_TABLE)
 
 
         self.connection.commit()
@@ -193,7 +194,6 @@ class DataManager:
         """)
         self.connection.commit()
     
-
     def load_data(self, start_date, end_date, source):
         if source:
             BASE_QUERY = TRANSACTION_NOTES_QUERY + " WHERE t.Source = ?"
@@ -202,7 +202,6 @@ class DataManager:
         transaction_notes_table, deposits, withdrawals = self._preprocess_transactions(pd.read_sql(BASE_QUERY, self.connection, parse_dates=["Date"], params=(source,) if source else None))
         balance_table, initial_balance, current_balance = self._compute_balances(transaction_notes_table, start_date, end_date)
 
- 
         filtered = self._apply_filters(transaction_notes_table, start_date, end_date)
         deposits, withdrawals = self._split_transactions(filtered)
         deposits_total = deposits['Amount'].sum() 
@@ -233,20 +232,25 @@ class DataManager:
         }
     
     def load_dues(self, start_date, end_date):
-        dues = self._load_dues()
+        start_str = pd.Timestamp(start_date).strftime("%Y-%m-%d")
+        end_str = pd.Timestamp(end_date).strftime("%Y-%m-%d")
 
+        self._create_due_dates()
+
+        dues = pd.read_sql(DUES_QUERY, self.connection, params=(end_str,))
            # Convert start/end to strings for comparison
         if not dues.empty and start_date is not None:
-            start_str = pd.Timestamp(start_date).strftime("%Y-%m-%d")
-            end_str = pd.Timestamp(end_date).strftime("%Y-%m-%d")
             dues = dues[dues["PeriodStart"] <= start_str]
             latest_term = dues["PeriodStart"].max()
             dues = dues[dues["PeriodStart"] == latest_term]
 
         dues_status = (
             dues
-            .groupby(["GBId", "MemberName", "PeriodStart", "Amount" ], as_index=False)
-            .agg({"AmountPaid": "sum"})   # sum all payments for the due
+            .groupby(["GBId", "MemberName", "PeriodStart", "Amount"], as_index=False)
+            .agg({
+                "AmountPaid": "sum",
+                "Date": "max"
+            })
         )
         # --- Compute summary values ---
         expected_dues = dues_status["Amount"].sum()
@@ -278,8 +282,8 @@ class DataManager:
                 return ["color: white; background-color: #FFBF00"] * len(row)
             else:
                 return ["color: white; background-color: #D22B2B"] * len(row)
-        dues_status = dues_status.sort_values(by=["PeriodStart", "Status", "GBId"], ascending=[False, True, True])
-        styled_df = dues_status[["GBId", "MemberName", "PeriodStart", "Amount", "AmountPaid", "Status"]] \
+        dues_status = dues_status.sort_values(by=["PeriodStart", "Status", "GBId",], ascending=[False, True, True])
+        styled_df = dues_status[["GBId", "MemberName", "PeriodStart", "Date", "Amount", "AmountPaid", "Status"]] \
             .style.apply(highlight_status, axis=1)
             # Return everything as a dictionary
         return {
@@ -292,12 +296,6 @@ class DataManager:
             "styled_df": styled_df
         }
     
-
-
-    def _load_dues(self):
-        self._create_due_dates()
-        return pd.read_sql(DUES_QUERY, self.connection)
-
     def _preprocess_transactions(self, df):
         df = df.copy()
         df["Date"] = pd.to_datetime(df["Date"]).dt.date

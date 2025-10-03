@@ -46,9 +46,6 @@ RECONCILE_CASHAPP_MARCH = """
     )
 """
 
-
-
-
 CREATE_NOTE_TABLE = """
     CREATE TABLE NoteTable (
         NoteId TEXT PRIMARY KEY,
@@ -89,6 +86,17 @@ CREATE_DUES_PAYMENTS_TABLE = """
     )
 """
 
+CREATE_BUDGET_TABLE = """
+    CREATE TABLE BudgetTable
+    (
+    BudgetId INTEGER PRIMARY KEY AUTOINCREMENT,
+    Date DATE,
+    Amount Decimal(18,2),
+    TransactionId TEXT,
+    FOREIGN KEY (TransactionId) REFERENCES TransactionTable(TransactionId)
+    )
+"""
+
 
 # Inserts / Merges
 
@@ -122,6 +130,7 @@ DUES_QUERY = """
         t.TransactionId,
         m.MemberName,
         d.PeriodStart,
+        t.Date,
         d.Amount,
         t.Amount AS AmountPaid
     FROM DuesTable d
@@ -130,7 +139,8 @@ DUES_QUERY = """
     LEFT JOIN MemberTable m
         ON m.GBId = d.GBId
     LEFT JOIN TransactionTable t
-        ON t.TransactionId = p.TransactionId
+        ON t.TransactionId = p.TransactionId 
+        AND t.Date <= ?
 """
 
 INSERT_DUES_FROM_MEMBERS = """

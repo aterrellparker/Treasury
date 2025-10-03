@@ -44,9 +44,6 @@ class TreasuryDashboard:
         #         db_path, check_same_thread=False, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
         #     self.ingestor.ingest_data()       # load CSVs
 
-        self.connection = sqlite3.connect(
-            db_path, check_same_thread=False, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
-
         self.today = datetime.date.today()
 
         # Initialize default date range
@@ -62,6 +59,9 @@ class TreasuryDashboard:
         if "term" not in st.session_state:
             st.session_state.term = "2025-08-01"
         self.term = st.session_state.term
+        if "use_custom" not in st.session_state:
+            st.session_state.use_custom = False
+        
 
         # Load initial data
         start_date, end_date  = pd.Timestamp(self.date_range[0]), pd.Timestamp(self.date_range[1])
@@ -109,56 +109,69 @@ class TreasuryDashboard:
 
     # Render date selector
     def render_date_selector(self):
-        col1, col2 = st.columns([3, 6])
+        st.text("")
+        col1, col2,col3,= st.columns([3,1.5,3])
         with col1:
-            month_range = pd.date_range(start="2019-06-01", end=self.today, freq="MS")[::-1]
-            month_options = ["Custom"] + [d.strftime("%B %Y") for d in month_range]
+            if not st.session_state.use_custom:
+                month_range = pd.date_range(start="2019-06-01", end=self.today, freq="MS")[::-1]
+                month_options = ["Custom"] + [d.strftime("%B %Y") for d in month_range]
 
-            selected_option = st.selectbox(
-                "Date Range:",
-                options=month_options,
-                index=1,  # Default = latest month
-                key="month_selector"
-            )
-
-            if selected_option == "Custom":
-                # Reuse your old radio selector
-                date_options = ["Custom", "Past Month", "Past Year", "All Time"]
-                date_selector = st.radio(
-                    label="None",
-                    label_visibility="hidden",
-                    options=date_options,
-                    horizontal=True,
-                    key="date_selector"
+                selected_option = st.selectbox(
+                    "Date Range:",
+                    label_visibility="collapsed",
+                    options=month_options,
+                    index=1,  # Default = latest month
+                    key="month_selector"
                 )
-
-                if date_selector == "Custom":  
-                    self.date_range = st.date_input(
-                    label="None",
-                    label_visibility="hidden",
-                    key="custom_date_range",
-                    format="MM.DD.YYYY",
-                    value=self.date_range
-                    )
-                    pass  # Keep self.date_range as-is for a user-defined custom picker
-                elif date_selector == "Past Month":
-                    self.date_range = (self.today - datetime.timedelta(days=30), self.today)
-                elif date_selector == "Past Year":
-                    self.date_range = (self.today - datetime.timedelta(days=365), self.today)
-                elif date_selector == "All Time":
-                    self.date_range = (datetime.date(2019, 6, 14), self.today)
-
+                if selected_option == "Custom":
+                    st.session_state.use_custom = True
+                    st.rerun()
+                else:
+                    # Parse selected month into start/end date
+                    selected_date = datetime.datetime.strptime(selected_option, "%B %Y")
+                    start_date = selected_date.replace(day=1).date()
+                    next_month = (selected_date.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
+                    end_date = (next_month - datetime.timedelta(days=1)).date()
+                    self.date_range = (start_date, end_date)
             else:
-                # Parse selected month into start/end date
-                selected_date = datetime.datetime.strptime(selected_option, "%B %Y")
-                start_date = selected_date.replace(day=1).date()
-                next_month = (selected_date.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
-                end_date = (next_month - datetime.timedelta(days=1)).date()
-                self.date_range = (start_date, end_date)
+                self.date_range = st.date_input(
+                label="Date Range:",
+                label_visibility="collapsed",
+                key="custom_date_range",
+                format="MM.DD.YYYY",
+                value=self.date_range
+                )
+                cola, colb = st.columns([2.5,1])
+                with cola:
+                    # Reuse your old radio selector
+                    date_options = ["Custom", "Past Month", "Past Year", "All Time"]
+                    date_selector = st.radio(
+                        label="None",
+                        label_visibility="collapsed",
+                        options=date_options,
+                        horizontal=True,
+                        key="date_selector"
+                    )
+                    if date_selector == "Custom":  
+                        pass  # Keep self.date_range as-is for a user-defined custom picker
+                    elif date_selector == "Past Month":
+                        self.date_range = (self.today - datetime.timedelta(days=30), self.today)
+                    elif date_selector == "Past Year":
+                        self.date_range = (self.today - datetime.timedelta(days=365), self.today)
+                    elif date_selector == "All Time":
+                        self.date_range = (datetime.date(2019, 6, 14), self.today)
+                    elif date_selector == "Back":
+                        st.session_state.use_custom = False
+                        st.rerun()
+                with colb: 
+                    if st.button("↩ Month Selector"):
+                        st.session_state.use_custom = False
+                        st.rerun()
         with col2:
             source_options = ["Both", "Checking", "Cashapp"]
             source_selector = st.radio(
-                label="Source",
+                label="Source:",
+                label_visibility="collapsed",
                 options=source_options,
                 horizontal=True,
                 key="source_selector"
@@ -169,8 +182,14 @@ class TreasuryDashboard:
                 self.source = source_options[1]
             elif source_selector == source_options[2]:
                 self.source = source_options[2]
-
-
+        with col3:
+            if st.button("Export Report to Word File", key="generate_report"):
+                start_date, end_date  = pd.Timestamp(self.date_range[0]), pd.Timestamp(self.date_range[1])
+                report = report_generator.TreasurerReport(start_date, end_date, self.data_manager)
+                report.build()
+                report.save()
+                report.open()
+                st.success("Report Generated Successfully")
 
         # Update session state and reload data if changed
         if self.date_range != st.session_state.date_range:
@@ -407,17 +426,6 @@ class TreasuryDashboard:
                 st.info("No valid edits to save.")
 
     def render_data_buttons(self):
-        # st.header("Data & Reports")
-        # Column 1 → Export Report to Word.File
-        if st.button("Export Report to Word File", key="generate_report"):
-            start_date, end_date  = pd.Timestamp(self.date_range[0]), pd.Timestamp(self.date_range[1])
-
-            report = report_generator.TreasurerReport(start_date, end_date, self.data_manager)
-            report.build()
-            report.save()
-            report.open()
-            st.success("Report Generated Successfully")
-
         # Column 2 → Load Data from CSV
         if st.button("Load Data from CSV", key="load_csv"):
             self.data_manager.read_data()
