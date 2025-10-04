@@ -59,7 +59,6 @@ class DataManager:
 
     def read_data(self):
         """Load all CSV sources into database."""
-        self.connection = sqlite3.connect(self.db_path)
         cursor = self.connection.cursor()
     
         for file in glob.glob("./Data/Raw/Members/*.csv"):
@@ -154,27 +153,47 @@ class DataManager:
         self.connection.commit()
     
     def _create_due_dates(self):
-        self.connection = sqlite3.connect(self.db_path)
         cursor = self.connection.cursor()
       
         # start_year = members['InitiationDate'].min().date()
-        end_year = datetime.datetime.today()
-    
+        end_year = datetime.datetime.today().year
+
+        # Create list of period ranges for each year
+        periods = []
+        for year in range(2019, end_year + 1):
+            # Spring Term: Jan 1 – Jul 30
+            periods.append({
+                "PeriodStart": f"{year}-01-01",
+                "PeriodEnd": f"{year}-07-30",
+                "Amount": 100
+            })
+            # Fall Term: Aug 1 – Dec 31
+            periods.append({
+                "PeriodStart": f"{year}-08-01",
+                "PeriodEnd": f"{year}-12-31",
+                "Amount": 100
+            })
+        
+        # Convert to DataFrame
+        due_dates = pd.DataFrame(periods)
+        due_dates["PeriodStart"] = pd.to_datetime(due_dates["PeriodStart"]).dt.strftime('%Y-%m-%d')
+        due_dates["PeriodEnd"] = pd.to_datetime(due_dates["PeriodEnd"]).dt.strftime('%Y-%m-%d')
+        
         # Create a dataframe with start and end of each cycle
-        due_dates = (
-            pd.date_range("2019-08-01", end_year, freq="6MS")
-            .to_frame(index=False, name="PeriodStart")
-        ) 
-        due_dates["PeriodEnd"] = due_dates["PeriodStart"]
+        # due_dates = (
+        #     pd.date_range("2019-08-01", end_year, freq="6MS")
+        #     .to_frame(index=False, name="PeriodStart")
+        # ) 
+        # due_dates["PeriodEnd"] = due_dates["PeriodStart"]
    
         # due_dates = pd.DataFrame({
         #     'PeriodStart': pd.to_datetime(years.astype(str) + '-08-01'),
         #     'PeriodEnd':   pd.to_datetime(years.astype(str) + '-12-31')
         # })
-        due_dates['Amount'] = 100
+        # due_dates['Amount'] = 100
 
-        due_dates['PeriodStart'] = pd.to_datetime(due_dates['PeriodStart']).dt.strftime('%Y-%m-%d')
-        due_dates['PeriodEnd']   = pd.to_datetime(due_dates['PeriodEnd']).dt.strftime('%Y-%m-%d')
+        # due_dates['PeriodStart'] = pd.to_datetime(due_dates['PeriodStart']).dt.strftime('%Y-%m-%d')
+        # due_dates['PeriodEnd']   = pd.to_datetime(due_dates['PeriodEnd']).dt.strftime('%Y-%m-%d')
 
         due_dates.to_sql("DueDatesTable", self.connection, if_exists="replace", index=False)
 
@@ -237,16 +256,24 @@ class DataManager:
 
         self._create_due_dates()
 
-        dues = pd.read_sql(DUES_QUERY, self.connection, params=(end_str,))
-           # Convert start/end to strings for comparison
-        if not dues.empty and start_date is not None:
-            dues = dues[dues["PeriodStart"] <= start_str]
-            latest_term = dues["PeriodStart"].max()
-            dues = dues[dues["PeriodStart"] == latest_term]
+        dues = pd.read_sql(DUES_QUERY, self.connection, params  =(end_str,start_str,end_str,))
+        # Convert start/end to strings for comparison
+        # if not dues.empty and start_date is not None:
+        #     dues = dues[
+        #         (dues["PeriodEnd"] >= start_str) &
+        #         (dues["PeriodStart"] <= end_str)
+        #     ]
+            #2024 08 01
+            #2025 02 01
+
+            #09 01 2024
+            #09 31 2024
+            # latest_term = dues["PeriodStart"].max()
+            # dues = dues[dues["PeriodStart"] == latest_term]
 
         dues_status = (
             dues
-            .groupby(["GBId", "MemberName", "PeriodStart", "Amount"], as_index=False)
+            .groupby(["DueId", "MemberName", "PeriodStart", "PeriodEnd", "Amount"], as_index=False)
             .agg({
                 "AmountPaid": "sum",
                 "Date": "max"
@@ -282,8 +309,8 @@ class DataManager:
                 return ["color: white; background-color: #FFBF00"] * len(row)
             else:
                 return ["color: white; background-color: #D22B2B"] * len(row)
-        dues_status = dues_status.sort_values(by=["PeriodStart", "Status", "GBId",], ascending=[False, True, True])
-        styled_df = dues_status[["GBId", "MemberName", "PeriodStart", "Date", "Amount", "AmountPaid", "Status"]] \
+        dues_status = dues_status.sort_values(by=["PeriodStart", "Status", "DueId",], ascending=[False, True, True])
+        styled_df = dues_status[["DueId", "MemberName", "PeriodStart", "PeriodEnd", "Date", "Amount", "AmountPaid", "Status"]] \
             .style.apply(highlight_status, axis=1)
             # Return everything as a dictionary
         return {

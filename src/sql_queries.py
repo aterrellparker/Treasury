@@ -126,10 +126,10 @@ TRANSACTION_NOTES_QUERY = """
 DUES_QUERY = """
     SELECT
         d.DueId,
-        d.GBId,
         t.TransactionId,
         m.MemberName,
         d.PeriodStart,
+        d.PeriodEnd,
         t.Date,
         d.Amount,
         t.Amount AS AmountPaid
@@ -141,6 +141,7 @@ DUES_QUERY = """
     LEFT JOIN TransactionTable t
         ON t.TransactionId = p.TransactionId 
         AND t.Date <= ?
+    WHERE PeriodEnd >= ? AND PeriodStart <= ?
 """
 
 INSERT_DUES_FROM_MEMBERS = """

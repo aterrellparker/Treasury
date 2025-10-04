@@ -59,8 +59,12 @@ class TreasuryDashboard:
         if "term" not in st.session_state:
             st.session_state.term = "2025-08-01"
         self.term = st.session_state.term
+
         if "use_custom" not in st.session_state:
             st.session_state.use_custom = False
+            
+        if "month_index" not in st.session_state:
+            st.session_state.month_index = 0  # 0 = most recent month
         
 
         # Load initial data
@@ -110,29 +114,44 @@ class TreasuryDashboard:
     # Render date selector
     def render_date_selector(self):
         st.text("")
+        month_range = pd.date_range(start="2019-06-01", end=self.today, freq="MS")[::-1]
+        month_options = ["Custom"] + [d.strftime("%B %Y") for d in month_range]
+        total_months = len(month_options) - 1
         col1, col2,col3,= st.columns([3,1.5,3])
         with col1:
+                # --- Layout with dropdown + two small buttons ---
             if not st.session_state.use_custom:
-                month_range = pd.date_range(start="2019-06-01", end=self.today, freq="MS")[::-1]
-                month_options = ["Custom"] + [d.strftime("%B %Y") for d in month_range]
+                cola, colb, colc = st.columns([1, 1, 11])
+                with cola:
+                    if st.button("←", help="Previous month"):
+                        st.session_state.month_index = (st.session_state.month_index + 1) % total_months
+                        print()
+                with colb:
+                    if st.button("→", help="Next month"):
+                        st.session_state.month_index = (st.session_state.month_index - 1) % total_months
+                        print(total_months)
+                        print(st.session_state.month_index)
+                        st.rerun()
+                with colc:
 
-                selected_option = st.selectbox(
-                    "Date Range:",
-                    label_visibility="collapsed",
-                    options=month_options,
-                    index=1,  # Default = latest month
-                    key="month_selector"
-                )
-                if selected_option == "Custom":
-                    st.session_state.use_custom = True
-                    st.rerun()
-                else:
-                    # Parse selected month into start/end date
-                    selected_date = datetime.datetime.strptime(selected_option, "%B %Y")
-                    start_date = selected_date.replace(day=1).date()
-                    next_month = (selected_date.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
-                    end_date = (next_month - datetime.timedelta(days=1)).date()
-                    self.date_range = (start_date, end_date)
+                    selected_option = st.selectbox(
+                        "Date Range:",
+                        label_visibility="collapsed",
+                        options=month_options,
+                        index=st.session_state.month_index + 1,
+                        key="month_selector"
+                    )
+                    if selected_option == "Custom":
+                        st.session_state.use_custom = True
+                        st.rerun()
+                    else:
+                        # Parse selected month into start/end date
+                        selected_date = datetime.datetime.strptime(selected_option, "%B %Y")
+                        start_date = selected_date.replace(day=1).date()
+                        next_month = (selected_date.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
+                        end_date = (next_month - datetime.timedelta(days=1)).date()
+                        self.date_range = (start_date, end_date)
+                    print()
             else:
                 self.date_range = st.date_input(
                 label="Date Range:",

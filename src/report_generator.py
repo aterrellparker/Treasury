@@ -110,7 +110,7 @@ class TreasurerReport:
         # Full per-member dues table
         if dues_status is not None and not dues_status.empty:
             self._add_table(
-                dues_status[["GBId", "MemberName", "PeriodStart", "Amount", "AmountPaid", "Status"]],
+                dues_status[["MemberName", "PeriodStart", "Amount", "AmountPaid", "Status"]],
                 "Per-Member Dues Status"
             )
         
