@@ -149,3 +149,14 @@ def plot_bubble_chart_plotly(df, plot_diameter=500):
 #     'color': np.random.choice(colors, n_bubbles)
 # })
 # plot_bubble_chart_plotly(df, plot_diameter=500)
+
+#   def render_packed_bubble(self):
+#         n_cat = 10
+
+#         # Generate Old Gold shades
+#         hex_color = "#a07400"
+#         old_gold_shades = self.generate_shades(hex_color, n_cat)
+#         df = pd.DataFrame({'label': [f'Item {i}' for i in range(n_cat)], 'size': np.random.randint(
+#             2, 250, n_cat), "color": np.random.choice(old_gold_shades, n_cat)})
+#         fig = PlotlyBubbleChart.plot_bubble_chart_plotly(df, plot_diameter=500)
+#         st.plotly_chart(fig)

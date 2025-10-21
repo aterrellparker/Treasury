@@ -17,7 +17,7 @@ INSERT_INITIAL_BALANCE = """
     INSERT INTO TransactionTable (TransactionId, Date, Amount, Source, Description)
     VALUES (
         generate_id('1941-05-23' || '0' || 'Initial Balance'),
-        '1941-05-23',
+        '1941-05-23 04:00:00+00:00',
         0,
         'Checking',
         'Initial Balance'
@@ -28,7 +28,7 @@ RECONCILE_CASHAPP_APRIL = """
     INSERT INTO TransactionTable (TransactionId, Date, Amount, Source, Description)
     VALUES (
         generate_id('2025-04-01' || '512.00' || 'Cash App discrepancy April'),
-        '2025-04-01',
+        '2025-04-01 04:00:00+00:00',
         512.00,
         'Cashapp',
         'Cash App discrepancy April'
@@ -39,7 +39,7 @@ RECONCILE_CASHAPP_MARCH = """
     INSERT INTO TransactionTable (TransactionId, Date, Amount, Source, Description)
     VALUES (
         generate_id('2025-03-01' || '414.00' || 'Cash App discrepancy March'),
-        '2025-03-01',
+        '2025-03-01 04:00:00+00:00',
         414.00,
         'Cashapp',
         'Cash App discrepancy March'
@@ -48,10 +48,11 @@ RECONCILE_CASHAPP_MARCH = """
 
 CREATE_NOTE_TABLE = """
     CREATE TABLE NoteTable (
-        NoteId TEXT PRIMARY KEY,
+        TransactionId TEXT PRIMARY KEY,
         Category TEXT,
         Notes TEXT,
-        FOREIGN KEY (NoteID) REFERENCES TransactionTable(TransactionID)
+        Attachments TEXT,
+        FOREIGN KEY (TransactionID) REFERENCES TransactionTable(TransactionID)
     )
 """
 
@@ -72,6 +73,7 @@ CREATE_DUES_TABLE = """
         PeriodStart DATE NOT NULL,
         PeriodEnd DATE NOT NULL,
         Amount DECIMAL(18,2),
+        Waived INTEGER DEFAULT 0,
         FOREIGN KEY (GBId) REFERENCES MemberTable(GBId)
     )
 """
@@ -92,10 +94,14 @@ CREATE_BUDGET_TABLE = """
     BudgetId INTEGER PRIMARY KEY AUTOINCREMENT,
     Date DATE,
     Amount Decimal(18,2),
+    Category TEXT,
+    Description TEXT,
     TransactionId TEXT,
+    Attachments TEXT,
     FOREIGN KEY (TransactionId) REFERENCES TransactionTable(TransactionId)
     )
 """
+
 
 
 # Inserts / Merges
@@ -104,10 +110,21 @@ INSERT_MEMBERS = "INSERT OR IGNORE INTO MemberTable SELECT * FROM tmp"
 
 INSERT_TRANSACTIONS = "INSERT OR IGNORE INTO TransactionTable SELECT * FROM tmp"
 
+INSERT_BUDGET = "INSERT OR IGNORE INTO BudgetTable SELECT * FROM tmp"
+
 DROP_TMP = "DROP TABLE IF EXISTS tmp"
 
 
 # Queries
+TRANSACTION_QUERY = """
+    SELECT
+        TransactionId,
+        Date,
+        Amount,
+        Source,
+        Description
+    FROM TransactionTable
+    """
 
 TRANSACTION_NOTES_QUERY = """
     SELECT
@@ -117,15 +134,17 @@ TRANSACTION_NOTES_QUERY = """
         t.Source,
         t.Description,
         n.Category,
-        n.Notes
+        n.Notes,
+        n.Attachments
     FROM TransactionTable t
     LEFT JOIN NoteTable n
-        ON t.TransactionId = n.NoteId
+        ON t.TransactionId = n.TransactionId
 """
 
 DUES_QUERY = """
     SELECT
         d.DueId,
+        d.Waived,
         t.TransactionId,
         m.MemberName,
         d.PeriodStart,
@@ -144,6 +163,19 @@ DUES_QUERY = """
     WHERE PeriodEnd >= ? AND PeriodStart <= ?
 """
 
+DUES_TO_BUDGET = """
+    INSERT OR REPLACE INTO BudgetTable (Date, Amount, Category, Description, TransactionId, Attachments)   
+    SELECT
+        d.PeriodEnd,
+        SUM(d.Amount) as TotalAmount,
+        'Dues' AS Category,
+        'Member Dues for period ending ' || d.PeriodEnd AS Description,
+        NULL AS TransactionId,
+        NULL AS Attachments
+    FROM DuesTable d
+    GROUP BY d.PeriodEnd
+"""
+
 INSERT_DUES_FROM_MEMBERS = """
     INSERT OR IGNORE INTO DuesTable (DueId, GBId, PeriodStart, PeriodEnd, Amount)
     SELECT 
@@ -157,3 +189,18 @@ INSERT_DUES_FROM_MEMBERS = """
         ON d.PeriodStart >= m.InitiationDate
         AND (m.GraduationDate IS NULL OR d.PeriodStart <= m.GraduationDate)
 """
+
+# def decimal_converter(val: bytes):
+#     s = val.decode().strip()
+#     if s in ("", None):  # Handle NULL/empty
+#         return None
+#     try:
+#         return decimal.Decimal(s)
+#     except NameError:
+#         # Log or fallback to None
+#         return None
+
+
+# sqlite3.register_converter("DECIMAL", decimal_converter)
+# sqlite3.register_converter("DATE", lambda date: datetime.datetime.strptime(
+#     date.decode(), "%Y-%m-%d").date())

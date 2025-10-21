@@ -1,11 +1,12 @@
 import subprocess
 import os
+from io import BytesIO
 
 from docx import Document
-from docx.shared import Pt, RGBColor
-from docx.shared import Inches, Pt
+from docx.shared import Pt, RGBColor, Inches
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 import pyquotegen
+import streamlit
 
 import ingest
 
@@ -122,9 +123,11 @@ class TreasurerReport:
             f"./reports/automated/TreasurerReport_"
             f"{self.start_date.strftime('%Y-%m-%d')}_to_{self.end_date.strftime('%Y-%m-%d')}.docx"
         )        
-        if os.path.exists(self.filename):
-            os.remove(self.filename)
-        self.document.save(self.filename)
+        # if os.path.exists(self.filename):
+        #     os.remove(self.filename)
+        buffer = BytesIO()
+        self.document.save(buffer)
+        return self.filename, buffer
 
 
     def open(self):
