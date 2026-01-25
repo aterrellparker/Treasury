@@ -199,24 +199,31 @@ class TreasuryDashboard:
                 self.source = source_options[1]
             elif source_selector == source_options[2]:
                 self.source = source_options[2]
-        with col3:
-            self.start_date, self.end_date = pd.Timestamp(
-                self.date_range[0]), pd.Timestamp(self.date_range[1])
-            report = report_generator.TreasurerReport(
-                self.start_date, self.end_date, self.data_manager)
-            if st.session_state.report_generated is False:
+            with col3:
                 if st.button("Generate Report"):
+                    start_date, end_date = pd.Timestamp(self.date_range[0]), pd.Timestamp(self.date_range[1])
+                    report = report_generator.TreasurerReport(start_date, end_date, self.data_manager)
                     report.build()
-                    st.session_state.report_generated = True
-            else:
-                filename, buffer = report.save()
-                st.download_button(
-                    label="⬇ Download Report",
-                    data=buffer,
-                    file_name=filename,
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                )
-                st.session_state.report_generated = True
+                    # Save report → get filename and buffer
+                    filename, buffer = report.save()
+
+                    # ✅ Store in session state
+                    st.session_state["report_filename"] = filename
+                    st.session_state["report_buffer"] = buffer
+
+                    st.success("Report generated successfully!")
+
+                # Show the download button only if report is in session state
+                if "report_buffer" in st.session_state and st.session_state["report_buffer"] is not None:
+                    # Always rewind buffer before download
+                    st.session_state["report_buffer"].seek(0)
+
+                    st.download_button(
+                        label="⬇ Download Report",
+                        data=st.session_state["report_buffer"],
+                        file_name=st.session_state["report_filename"],
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
 
         # Update session state and reload data if changed
         if self.date_range != st.session_state.date_range:
@@ -413,7 +420,6 @@ class TreasuryDashboard:
         # ends just before next August
         august_end = pd.Timestamp(f"{end_year + 1}-07-31")
 
-        # ---------- FILTER & PROCESS DATA ----------
         df_filtered = df[df["Date"].between(august_start, august_end)]
         df_filtered["Amount"] = pd.to_numeric(
             df_filtered["Amount"], errors="coerce").round(2)
@@ -574,13 +580,12 @@ class TreasuryDashboard:
                 return (start_date, end_date)
 
     # Transaction editor
-
     def render_transaction_editor(self):
         editor = st.dataframe(
             self.data["transaction_notes_table"],
             # num_rows="fixed",
-            column_order=('TransactionId', 'Category', 'Notes', 'Date', 'Amount', 'Source',
-                          'Description', 'Attachments'),
+            column_order=('TransactionId',  'Date', 'Amount', 'Source',
+                          'Description', 'Category', 'Notes', 'Attachments'),
             # disabled=['NoteId', 'Date', 'Amount', 'Source', 'Description'],
             width='stretch'
         )

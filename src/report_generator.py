@@ -118,20 +118,15 @@ class TreasurerReport:
         self._add_footer()
 
     def save(self):  
-        # Save file
         self.filename = (
-            f"./reports/automated/TreasurerReport_"
-            f"{self.start_date.strftime('%Y-%m-%d')}_to_{self.end_date.strftime('%Y-%m-%d')}.docx"
+            f"TreasurerReport_{self.start_date.strftime('%Y-%m-%d')}_to_{self.end_date.strftime('%Y-%m-%d')}.docx"
         )        
-        # if os.path.exists(self.filename):
-        #     os.remove(self.filename)
         buffer = BytesIO()
         self.document.save(buffer)
         return self.filename, buffer
 
 
     def open(self):
-        # Auto-open
         subprocess.run(["open", self.filename])
 
     def _set_margins(self, top=0.5, bottom=0.5, left=0.5, right=0.5):
