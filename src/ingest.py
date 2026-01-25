@@ -13,7 +13,7 @@ from sql_queries import *
 class DataManager:
     def __init__(self, db_path="database.db"):
         self.db_path = db_path
-        os.remove(self.db_path) if os.path.exists(self.db_path) else None
+        # os.remove(self.db_path) if os.path.exists(self.db_path) else None
         # self.fix_hash()
         if os.path.exists(self.db_path):
             self.connection = sqlite3.connect(
